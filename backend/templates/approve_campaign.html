@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CampaignX - Approve Campaign</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 { font-size: 32px; margin-bottom: 10px; }
+        .content { padding: 40px; }
+        .campaign-info {
+            background: #f7fafc;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-radius: 8px;
+        }
+        .info-row { display: flex; margin-bottom: 10px; font-size: 14px; }
+        .info-label { font-weight: 600; color: #4a5568; width: 140px; }
+        .segment-card {
+            background: #fff;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .variant {
+            background: #f7fafc;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .btn {
+            padding: 16px 40px;
+            font-size: 16px;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            min-width: 160px;
+            margin: 10px;
+        }
+        .btn-approve { background: #10b981; color: white; }
+        .btn-reject { background: #ef4444; color: white; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Campaign Approval Required</h1>
+            <p>Review campaign details and approve to launch</p>
+        </div>
+        <div class="content">
+            <div class="campaign-info">
+                <h2>📋 Campaign Overview</h2>
+                <div class="info-row">
+                    <div class="info-label">Campaign ID:</div>
+                    <div class="info-value" id="campaignId">Loading...</div>
+                </div>
+                <div class="info-row">
+                    <div class="info-label">Product:</div>
+                    <div class="info-value" id="productName">Loading...</div>
+                </div>
+                <div class="info-row">
+                    <div class="info-label">Objective:</div>
+                    <div class="info-value" id="objective">Loading...</div>
+                </div>
+            </div>
+            <div id="segmentsContainer"></div>
+            <div style="text-align: center; margin-top: 30px;">
+                <button class="btn btn-approve" onclick="approveCampaign()">✓ Approve & Launch</button>
+                <button class="btn btn-reject" onclick="rejectCampaign()">✗ Reject Campaign</button>
+                <div id="statusMessage"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const campaignId = urlParams.get('id');
+        fetch(`/api/campaigns/${campaignId}`)
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('campaignId').textContent = data.id.substring(0, 12) + '...';
+                document.getElementById('productName').textContent = data.product_name;
+                document.getElementById('objective').textContent = data.objective;
+                return fetch(`/api/campaigns/${campaignId}/variants`);
+            })
+            .then(r => r.json())
+            .then(data => {
+                const container = document.getElementById('segmentsContainer');
+                const segmentMap = {};
+                data.variants.forEach(v => {
+                    const seg = v.segment_name || 'General';
+                    if (!segmentMap[seg]) segmentMap[seg] = [];
+                    segmentMap[seg].push(v);
+                });
+                Object.keys(segmentMap).forEach(seg => {
+                    const html = `<div class="segment-card"><h3>${seg}</h3>${segmentMap[seg].map(v => 
+                        `<div class="variant"><strong>${v.subject}</strong><p>${v.body.substring(0, 200)}...</p></div>`
+                    ).join('')}</div>`;
+                    container.innerHTML += html;
+                });
+            });
+        function approveCampaign() {
+            fetch(`/api/campaigns/${campaignId}/approve`, {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('statusMessage').innerHTML = '✓ Approved! Redirecting...';
+                    setTimeout(() => window.location.href = `/api/campaigns/${campaignId}/dashboard`, 2000);
+                });
+        }
+        function rejectCampaign() {
+            fetch(`/api/campaigns/${campaignId}/reject`, {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('statusMessage').innerHTML = 'Campaign Rejected';
+                });
+        }
+    </script>
+</body>
+</html>

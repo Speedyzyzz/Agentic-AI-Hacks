@@ -1,22 +1,42 @@
 from fastapi import FastAPI, Depends
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from agents import parse_campaign_brief
-from planner import plan_campaign, validate_plan
-from content import generate_content_for_campaign
-from analytics import analyze_campaign_performance
-from optimizer_simple import optimize_campaign_simple
+from agents.brief_parser import parse_campaign_brief
+from agents.planner import plan_campaign, validate_plan
+from agents.content_generator import generate_content_for_campaign
+from agents.analytics import analyze_campaign_performance
+from agents.optimizer import optimize_campaign_simple
+from agents.api_agent import APIAgent
 from api_client import get_api_client
+from api_response import success_response, error_response
 from db import init_db, get_db
 from models import Campaign, Segment, Variant, PerformanceMetric, AgentLog
 from utils import log_agent_decision, get_agent_logs, validate_campaign_data
 import logging
 import json
+import os
+from pathlib import Path
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# Configure CORS for React frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Get templates directory
+TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
 @app.on_event("startup")
@@ -49,7 +69,7 @@ async def create_campaign(data: CampaignBrief, db: Session = Depends(get_db)):
         parsed_brief = parse_campaign_brief(data.brief)
         
         if "error" in parsed_brief:
-            return {"error": "Failed to parse brief", "details": parsed_brief}
+            return error_response("Failed to parse brief", data=parsed_brief)
         
         # Create campaign first to get ID for logging
         campaign = Campaign(
@@ -82,7 +102,7 @@ async def create_campaign(data: CampaignBrief, db: Session = Depends(get_db)):
                 decision="Plan validation failed",
                 reasoning="Quality validation did not meet minimum standards"
             )
-            return {"error": "Plan validation failed - insufficient quality"}
+            return error_response("Plan validation failed - insufficient quality")
         
         # Log planning decision
         log_agent_decision(
@@ -151,25 +171,36 @@ async def create_campaign(data: CampaignBrief, db: Session = Depends(get_db)):
                 "strategy": variant_data['strategy']
             })
         
-        campaign.status = "content_generated"
+        campaign.status = "pending_approval"
         db.commit()
         db.refresh(campaign)
         
         logger.info(f"Campaign created successfully: {campaign.id}")
         
-        return {
-            "success": True,
-            "campaign_id": campaign.id,
-            "parsed_brief": parsed_brief,
-            "plan": plan,
-            "variants": stored_variants,
-            "status": "Campaign created with content variants"
-        }
+        # CRITICAL: Return approval URL for human-in-the-loop
+        approval_url = f"http://127.0.0.1:8000/approval/{campaign.id}"
+        
+        return success_response(
+            data={
+                "campaign_id": campaign.id,
+                "status": "pending_approval",
+                "approval_url": approval_url,
+                "parsed_brief": parsed_brief,
+                "plan": {
+                    "segments": [{"id": s['id'], "name": s["name"], "reasoning": s["reasoning"]} for s in segments_with_ids],
+                    "send_time": plan["send_time"],
+                    "send_time_reasoning": plan.get("send_time_reasoning", ""),
+                    "strategy_reasoning": plan.get("strategy_reasoning", "")
+                },
+                "variants": stored_variants
+            },
+            message="Campaign created - awaiting approval"
+        )
         
     except Exception as e:
         logger.error(f"Campaign creation failed: {str(e)}")
         db.rollback()
-        return {"error": str(e), "type": "creation_failure"}
+        return error_response(str(e))
 
 
 @app.get("/campaigns/{campaign_id}")
@@ -575,7 +606,7 @@ async def full_optimization_loop(campaign_id: str, db: Session = Depends(get_db)
         
         # Step 3: Optimize
         logger.info("Step 3: Running optimization...")
-        optimization = optimize_campaign(campaign_id, db, force=False)
+        optimization = optimize_campaign_simple(campaign_id, db)
         
         logger.info(f"{'='*70}")
         logger.info(f"LOOP COMPLETE")
@@ -597,3 +628,232 @@ async def full_optimization_loop(campaign_id: str, db: Session = Depends(get_db)
     except Exception as e:
         logger.error(f"Optimization loop failed: {str(e)}")
         return {"error": str(e)}
+
+
+# ==========================================
+# HUMAN-IN-THE-LOOP APPROVAL ENDPOINTS
+# ==========================================
+
+@app.get("/approval/{campaign_id}", response_class=HTMLResponse)
+async def show_approval_page(campaign_id: str):
+    """
+    Serve HTML approval page for human-in-the-loop review.
+    
+    CRITICAL: This is required by CampaignX rules.
+    """
+    html_path = TEMPLATES_DIR / "approve_campaign.html"
+    
+    if not html_path.exists():
+        return HTMLResponse(content="<h1>Approval template not found</h1>", status_code=404)
+    
+    with open(html_path, 'r') as f:
+        html_content = f.read()
+    
+    return HTMLResponse(content=html_content)
+
+
+@app.get("/api/campaigns/{campaign_id}/variants")
+async def get_campaign_variants(campaign_id: str, db: Session = Depends(get_db)):
+    """
+    Get campaign variants for approval page.
+    """
+    campaign = db.query(Campaign).filter_by(id=campaign_id).first()
+    
+    if not campaign:
+        return {"error": "Campaign not found"}
+    
+    variants_data = []
+    send_time = None
+    send_time_reasoning = None
+    
+    for variant in campaign.variants:
+        variants_data.append({
+            "id": variant.id,
+            "segment_name": variant.segment.segment_name if variant.segment else "General",
+            "subject": variant.subject,
+            "body": variant.body,
+            "send_time": variant.send_time,
+            "version": variant.version_number
+        })
+        
+        if not send_time and variant.send_time:
+            send_time = variant.send_time
+            # Get send time reasoning from agent logs
+            logs = get_agent_logs(db, campaign_id)
+            planner_log = next((log for log in logs if log["agent_name"] == "planner"), None)
+            if planner_log:
+                send_time_reasoning = planner_log.get("reasoning", "")
+    
+    return {
+        "campaign_id": campaign_id,
+        "product_name": campaign.product_name,
+        "objective": campaign.objective,
+        "variants": variants_data,
+        "send_time": send_time,
+        "send_time_reasoning": send_time_reasoning
+    }
+
+
+@app.post("/api/campaigns/{campaign_id}/approve")
+async def approve_campaign(campaign_id: str, db: Session = Depends(get_db)):
+    """
+    Approve campaign for launch.
+    
+    CRITICAL: Human-in-the-loop approval required by CampaignX rules.
+    """
+    try:
+        campaign = db.query(Campaign).filter_by(id=campaign_id).first()
+        
+        if not campaign:
+            return {"success": False, "error": "Campaign not found"}
+        
+        if campaign.status == "approved":
+            return {"success": False, "error": "Campaign already approved"}
+        
+        # Update status to approved
+        campaign.status = "approved"
+        db.commit()
+        
+        # Log approval decision
+        log_agent_decision(
+            db=db,
+            campaign_id=campaign_id,
+            agent_name="human_approver",
+            decision="Campaign approved for launch",
+            reasoning="Human reviewer approved campaign content and targeting",
+            metadata={"approved_at": datetime.now().isoformat()}
+        )
+        
+        logger.info(f"Campaign {campaign_id} approved by human reviewer")
+        
+        # Re-fetch customer cohort (CRITICAL for test phase)
+        api_client = get_api_client()
+        for variant in campaign.variants:
+            segment_name = variant.segment.segment_name if variant.segment else "general"
+            
+            # Fetch FRESH cohort
+            cohort_response = api_client.fetch_customer_cohort(
+                segment_criteria=segment_name,
+                limit=1000
+            )
+            
+            logger.info(f"Re-fetched fresh cohort for segment: {segment_name}")
+        
+        return {
+            "success": True,
+            "campaign_id": campaign_id,
+            "status": "approved",
+            "message": "Campaign approved and scheduled for launch"
+        }
+        
+    except Exception as e:
+        logger.error(f"Approval failed: {str(e)}")
+        db.rollback()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/campaigns/{campaign_id}/reject")
+async def reject_campaign(campaign_id: str, db: Session = Depends(get_db)):
+    """
+    Reject campaign.
+    
+    Allows human to stop campaign from launching.
+    """
+    try:
+        campaign = db.query(Campaign).filter_by(id=campaign_id).first()
+        
+        if not campaign:
+            return {"success": False, "error": "Campaign not found"}
+        
+        # Update status to rejected
+        campaign.status = "rejected"
+        db.commit()
+        
+        # Log rejection
+        log_agent_decision(
+            db=db,
+            campaign_id=campaign_id,
+            agent_name="human_approver",
+            decision="Campaign rejected",
+            reasoning="Human reviewer rejected campaign",
+            metadata={"rejected_at": datetime.now().isoformat()}
+        )
+        
+        logger.info(f"Campaign {campaign_id} rejected by human reviewer")
+        
+        return {
+            "success": True,
+            "campaign_id": campaign_id,
+            "status": "rejected",
+            "message": "Campaign rejected"
+        }
+        
+    except Exception as e:
+        logger.error(f"Rejection failed: {str(e)}")
+        db.rollback()
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/campaigns/{campaign_id}/dashboard", response_class=HTMLResponse)
+async def campaign_dashboard(campaign_id: str, db: Session = Depends(get_db)):
+    """
+    Simple dashboard showing campaign status after approval.
+    """
+    campaign = db.query(Campaign).filter_by(id=campaign_id).first()
+    
+    if not campaign:
+        return HTMLResponse(content="<h1>Campaign not found</h1>", status_code=404)
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Campaign Dashboard</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                max-width: 800px;
+                margin: 50px auto;
+                padding: 20px;
+                background: #f5f5f5;
+            }}
+            .card {{
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }}
+            h1 {{ color: #333; }}
+            .success {{ color: #10b981; font-weight: bold; }}
+            .info {{ color: #666; margin: 10px 0; }}
+            .button {{
+                display: inline-block;
+                margin: 20px 10px 0 0;
+                padding: 12px 24px;
+                background: #667eea;
+                color: white;
+                text-decoration: none;
+                border-radius: 6px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>✅ Campaign Approved!</h1>
+            <p class="success">Campaign "{campaign.product_name}" has been approved and is ready for launch.</p>
+            
+            <div class="info">
+                <strong>Campaign ID:</strong> {campaign.id[:12]}...<br>
+                <strong>Objective:</strong> {campaign.objective}<br>
+                <strong>Status:</strong> {campaign.status}<br>
+                <strong>Variants:</strong> {len(campaign.variants)}
+            </div>
+            
+            <a href="/campaigns/{campaign.id}/logs" class="button">View Agent Logs</a>
+            <a href="http://127.0.0.1:8000/fetch-metrics/{campaign.id}" class="button">Compute Metrics</a>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return HTMLResponse(content=html)

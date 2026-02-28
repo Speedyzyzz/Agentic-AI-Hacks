@@ -17,7 +17,7 @@ class Campaign(Base):
     product_name = Column(String, nullable=False)
     objective = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    status = Column(String, default="draft")  # draft, approved, launched, optimized
+    status = Column(String, default="draft")  # draft, pending_approval, approved, rejected, launched, optimized
     
     # Relationships
     segments = relationship("Segment", back_populates="campaign", cascade="all, delete-orphan")
