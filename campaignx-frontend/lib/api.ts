@@ -26,7 +26,7 @@ export const campaignAPI = {
    * Get campaign details
    */
   get: async (campaignId: string): Promise<APIResponse<Campaign>> => {
-    const response = await axiosInstance.get(`/campaigns/${campaignId}`);
+    const response = await axiosInstance.get(`/api/campaigns/${campaignId}`);
     return response.data;
   },
 
@@ -34,15 +34,15 @@ export const campaignAPI = {
    * Get all variants for a campaign
    */
   getVariants: async (campaignId: string): Promise<APIResponse<{ campaign_id: string; variants: Variant[] }>> => {
-    const response = await axiosInstance.get(`/campaigns/${campaignId}/variants`);
+    const response = await axiosInstance.get(`/api/campaigns/${campaignId}/variants`);
     return response.data;
   },
 
   /**
-   * Approve campaign
+   * Approve campaign (re-fetches fresh cohort)
    */
   approve: async (campaignId: string): Promise<APIResponse<any>> => {
-    const response = await axiosInstance.post(`/campaigns/${campaignId}/approve`);
+    const response = await axiosInstance.post(`/api/campaigns/${campaignId}/approve`);
     return response.data;
   },
 
@@ -50,7 +50,7 @@ export const campaignAPI = {
    * Reject campaign
    */
   reject: async (campaignId: string): Promise<APIResponse<any>> => {
-    const response = await axiosInstance.post(`/campaigns/${campaignId}/reject`);
+    const response = await axiosInstance.post(`/api/campaigns/${campaignId}/reject`);
     return response.data;
   },
 };
@@ -61,18 +61,10 @@ export const campaignAPI = {
 
 export const metricsAPI = {
   /**
-   * Fetch metrics for a campaign
+   * Fetch performance metrics for a campaign
    */
   fetch: async (campaignId: string): Promise<APIResponse<MetricsResponse>> => {
     const response = await axiosInstance.post(`/fetch-metrics/${campaignId}`);
-    return response.data;
-  },
-
-  /**
-   * Get metrics for a campaign
-   */
-  get: async (campaignId: string): Promise<APIResponse<MetricsResponse>> => {
-    const response = await axiosInstance.get(`/campaigns/${campaignId}/metrics`);
     return response.data;
   },
 };
@@ -83,7 +75,7 @@ export const metricsAPI = {
 
 export const optimizationAPI = {
   /**
-   * Optimize a campaign
+   * Run surgical optimization on campaign
    */
   optimize: async (campaignId: string): Promise<APIResponse<OptimizationResponse>> => {
     const response = await axiosInstance.post(`/optimize/${campaignId}`);
@@ -91,10 +83,10 @@ export const optimizationAPI = {
   },
 
   /**
-   * Start autonomous optimization loop
+   * Run full autonomous optimization loop
    */
   autonomousLoop: async (campaignId: string): Promise<APIResponse<any>> => {
-    const response = await axiosInstance.post(`/full-optimization-loop/${campaignId}`);
+    const response = await axiosInstance.post(`/autonomous-loop/${campaignId}`);
     return response.data;
   },
 };
@@ -105,10 +97,10 @@ export const optimizationAPI = {
 
 export const logsAPI = {
   /**
-   * Get decision logs for a campaign
+   * Get agent decision logs for transparency
    */
   get: async (campaignId: string): Promise<APIResponse<LogsResponse>> => {
-    const response = await axiosInstance.get(`/campaigns/${campaignId}/logs`);
+    const response = await axiosInstance.get(`/api/campaigns/${campaignId}/logs`);
     return response.data;
   },
 };
@@ -119,10 +111,10 @@ export const logsAPI = {
 
 export const launchAPI = {
   /**
-   * Launch a campaign
+   * Launch approved campaign
    */
   launch: async (campaignId: string): Promise<APIResponse<any>> => {
-    const response = await axiosInstance.post(`/launch-campaign/${campaignId}`);
+    const response = await axiosInstance.post(`/launch/${campaignId}`);
     return response.data;
   },
 };

@@ -1,345 +1,307 @@
 """
-API Agent - Dynamic OpenAPI Spec Discovery and Endpoint Interaction
-
-CRITICAL: This agent MUST dynamically discover endpoints from OpenAPI spec.
-NO hardcoded URLs. System must adapt if API changes.
+API Agent - Real CampaignX API Integration
+Implements OpenAPI-based dynamic discovery with header authentication
 """
-import logging
-import json
-import requests
-from typing import Dict, List, Optional
-from datetime import datetime
 
-logger = logging.getLogger(__name__)
+import json
+import os
+import requests
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Load OpenAPI Spec (source of truth)
+OPENAPI_SPEC_PATH = os.path.join(os.path.dirname(__file__), "..", "openapi.json")
+with open(OPENAPI_SPEC_PATH, "r") as f:
+    OPENAPI_SPEC = json.load(f)
+
+# Base URL - Replace with real URL once confirmed
+BASE_URL = os.getenv("CAMPAIGNX_API_BASE_URL", "https://campaignx.inxiteout.ai")
+
+# API Key from environment
+API_KEY = os.getenv("CAMPAIGNX_API_KEY")
 
 
 class APIAgent:
-    """
-    Intelligent API agent that:
-    1. Fetches OpenAPI spec dynamically
-    2. Discovers available endpoints
-    3. Constructs requests based on schema
-    4. Validates required fields
-    5. Executes API calls with error handling
-    """
+    """Real CampaignX API Client with dynamic endpoint discovery"""
     
-    def __init__(self, spec_url: str = None, base_url: str = None):
-        """
-        Initialize API agent.
+    def __init__(self):
+        """Initialize API Agent with OpenAPI specification"""
+        self.spec = OPENAPI_SPEC
+        self.base_url = BASE_URL
+        self.api_key = API_KEY
         
-        Args:
-            spec_url: URL to fetch OpenAPI spec (e.g., /openapi.json)
-            base_url: Base API URL if spec doesn't contain servers
+    def discover_endpoints(self) -> List[str]:
         """
-        self.spec_url = spec_url or "https://api.example.com/openapi.json"
-        self.base_url = base_url or "https://api.example.com"
-        self.spec = None
-        self.endpoints = {}
-        self.discovered = False
-        
-        logger.info(f"APIAgent initialized with spec_url: {self.spec_url}")
-    
-    def discover_endpoints(self, spec: Dict = None) -> bool:
-        """
-        Dynamically discover endpoints from OpenAPI spec.
+        Discover available API endpoints from OpenAPI spec
         
         Returns:
-            bool: True if discovery successful
+            List of endpoint paths
         """
+        return list(self.spec.get('paths', {}).keys())
+    
+    def get_endpoint_details(self, endpoint: str) -> Dict:
+        """
+        Get details about a specific endpoint
+        
+        Args:
+            endpoint: Endpoint path (e.g., '/api/v1/signup')
+            
+        Returns:
+            Endpoint details including methods, parameters, schemas
+        """
+        return self.spec.get('paths', {}).get(endpoint, {})
+    
+    # ============================================
+    # AUTHENTICATION
+    # ============================================
+    
+    def signup(self, team_name: str, team_email: str) -> Dict:
+        """
+        Register team and generate API key (call once)
+        
+        Args:
+            team_name: Team name (3-100 alphanumeric chars)
+            team_email: Valid email address
+            
+        Returns:
+            Response with api_key (shown only once)
+        """
+        url = f"{self.base_url}/api/v1/signup"
+        payload = {
+            "team_name": team_name,
+            "team_email": team_email
+        }
+        
         try:
-            if spec:
-                self.spec = spec
-            elif not self.spec:
-                # In production: fetch real spec
-                # response = requests.get(self.spec_url)
-                # self.spec = response.json()
-                
-                # For demo: use mock spec (but structure is real)
-                self.spec = self._get_mock_spec()
-            
-            if not self.spec or "paths" not in self.spec:
-                logger.error("Invalid OpenAPI spec")
-                return False
-            
-            # Extract base URL from spec if available
-            if "servers" in self.spec and len(self.spec["servers"]) > 0:
-                self.base_url = self.spec["servers"][0]["url"]
-            
-            # Discover all endpoints
-            self.endpoints = {}
-            for path, methods in self.spec["paths"].items():
-                for method, details in methods.items():
-                    operation_id = details.get("operationId")
-                    if operation_id:
-                        self.endpoints[operation_id] = {
-                            "path": path,
-                            "method": method.upper(),
-                            "summary": details.get("summary", ""),
-                            "parameters": details.get("parameters", []),
-                            "requestBody": details.get("requestBody", {}),
-                            "responses": details.get("responses", {})
-                        }
-                        logger.info(f"Discovered: {operation_id} -> {method.upper()} {path}")
-            
-            self.discovered = True
-            logger.info(f"API Discovery complete: {len(self.endpoints)} endpoints")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Endpoint discovery failed: {str(e)}")
-            return False
+            response = requests.post(url, json=payload, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {
+                "error": str(e),
+                "message": "Signup failed"
+            }
     
-    def get_available_operations(self) -> List[str]:
-        """Get list of all discovered operations"""
-        return list(self.endpoints.keys())
+    # ============================================
+    # CUSTOMER DATA
+    # ============================================
     
-    def fetch_customer_cohort(self, segment_criteria: str, limit: int = 1000) -> Dict:
+    def get_customer_cohort(self) -> Dict:
         """
-        Fetch customer cohort for campaign segment.
+        Retrieve customer cohort data (MUST be called before every send)
         
-        CRITICAL: This MUST be called fresh on every approval/relaunch.
+        Rate limit: 100 calls/day
+        Requires: Valid API key
+        
+        Returns:
+            CustomerCohortResponse with data array
         """
-        if not self.discovered:
-            self.discover_endpoints()
+        url = f"{self.base_url}/api/v1/get_customer_cohort"
+        headers = {
+            "x-api-key": self.api_key
+        }
         
-        operation = "fetchCustomerCohort"
-        if operation not in self.endpoints:
-            return {"error": f"Operation {operation} not found in API spec"}
-        
-        request = self._build_request(operation, {
-            "segment_criteria": segment_criteria,
-            "limit": limit
-        })
-        
-        logger.info(f"Fetching fresh cohort: segment='{segment_criteria}', limit={limit}")
-        return self._execute_request(request)
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {
+                "error": str(e),
+                "message": "Failed to fetch customer cohort",
+                "data": [],
+                "total_count": 0
+            }
     
-    def schedule_campaign(self, campaign_id: str, segment_id: int, 
-                         subject: str, body: str, send_time: str,
-                         customer_ids: List[str]) -> Dict:
+    def fetch_customer_cohort(self) -> Dict:
+        """Alias for backward compatibility"""
+        return self.get_customer_cohort()
+    
+    # ============================================
+    # CAMPAIGNS
+    # ============================================
+    
+    def send_campaign(
+        self,
+        subject: str,
+        body: str,
+        customer_ids: List[str],
+        send_time: str
+    ) -> Dict:
         """
-        Schedule campaign for delivery via API.
+        Submit marketing campaign to targeted customer cohort
+        
+        Args:
+            subject: Email subject (max 200 chars, supports emoji)
+            body: Campaign message (1-5000 chars, supports emoji + URLs)
+            customer_ids: List of customer IDs (must be from cohort, max 5000)
+            send_time: Send time in format "DD:MM:YY HH:MM:SS" (IST, future)
+        
+        Rate limit: 100 calls/day
+        Requires: Valid API key
+        
+        Returns:
+            SendCampaignResponse with campaign_id
         """
-        if not self.discovered:
-            self.discover_endpoints()
-        
-        operation = "scheduleCampaign"
-        if operation not in self.endpoints:
-            return {"error": f"Operation {operation} not found"}
-        
-        request = self._build_request(operation, {
-            "campaign_id": campaign_id,
-            "segment_id": segment_id,
+        url = f"{self.base_url}/api/v1/send_campaign"
+        headers = {
+            "x-api-key": self.api_key
+        }
+        payload = {
             "subject": subject,
             "body": body,
-            "send_time": send_time,
-            "customer_ids": customer_ids
-        })
-        
-        logger.info(f"Scheduling campaign: {campaign_id}, segment: {segment_id}")
-        return self._execute_request(request)
-    
-    def fetch_performance_metrics(self, campaign_id: str, variant_ids: List[int] = None) -> Dict:
-        """
-        Fetch real performance metrics from API.
-        """
-        if not self.discovered:
-            self.discover_endpoints()
-        
-        operation = "fetchPerformanceMetrics"
-        if operation not in self.endpoints:
-            return {"error": f"Operation {operation} not found"}
-        
-        params = {"campaign_id": campaign_id}
-        if variant_ids:
-            params["variant_ids"] = variant_ids
-        
-        request = self._build_request(operation, params)
-        
-        logger.info(f"Fetching performance metrics: campaign={campaign_id}")
-        return self._execute_request(request)
-    
-    def _build_request(self, operation_id: str, params: Dict) -> Optional[Dict]:
-        """
-        Dynamically build request from discovered schema.
-        Validates required fields.
-        """
-        if operation_id not in self.endpoints:
-            logger.error(f"Unknown operation: {operation_id}")
-            return None
-        
-        endpoint = self.endpoints[operation_id]
-        
-        # Extract schema
-        schema = {}
-        if "requestBody" in endpoint:
-            content = endpoint["requestBody"].get("content", {})
-            if "application/json" in content:
-                schema = content["application/json"].get("schema", {})
-        
-        # Validate required fields
-        required = schema.get("required", [])
-        for field in required:
-            if field not in params:
-                logger.error(f"Missing required field: {field}")
-                return None
-        
-        return {
-            "url": f"{self.base_url}{endpoint['path']}",
-            "method": endpoint["method"],
-            "data": params,
-            "operation": operation_id
+            "list_customer_ids": customer_ids,
+            "send_time": send_time
         }
-    
-    def _execute_request(self, request_config: Dict) -> Dict:
-        """
-        Execute API request with error handling.
-        
-        In production, this makes real HTTP calls.
-        For demo, returns mock data (but structure is production-ready).
-        """
-        logger.info(f"API Call: {request_config['method']} {request_config['url']}")
-        logger.info(f"Payload: {json.dumps(request_config['data'], indent=2)}")
         
         try:
-            # In production:
-            # if request_config['method'] == 'POST':
-            #     response = requests.post(
-            #         request_config['url'],
-            #         json=request_config['data'],
-            #         headers={'Authorization': f'Bearer {self.api_key}'}
-            #     )
-            #     return response.json()
-            
-            # For demo: return mock response (but realistic structure)
-            response = self._mock_response(request_config)
-            logger.info(f"Response: {json.dumps(response, indent=2)}")
-            return response
-            
-        except Exception as e:
-            logger.error(f"API call failed: {str(e)}")
-            return {"error": str(e)}
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {
+                "error": str(e),
+                "message": "Failed to send campaign",
+                "campaign_id": None
+            }
     
-    def _mock_response(self, request_config: Dict) -> Dict:
-        """
-        Mock API responses for demo.
-        Structure matches real API responses.
-        """
-        operation = request_config['operation']
-        
-        if operation == "fetchCustomerCohort":
-            # Simulate cohort fetch
-            segment = request_config['data'].get('segment_criteria', 'general')
-            limit = request_config['data'].get('limit', 1000)
-            
-            return {
-                "success": True,
-                "segment": segment,
-                "count": limit,
-                "customer_ids": [f"cust_{i}" for i in range(min(limit, 50))],  # Demo: 50 customers
-                "fetched_at": datetime.now().isoformat(),
-                "message": f"Fresh cohort fetched: {limit} customers for '{segment}'"
-            }
-        
-        elif operation == "scheduleCampaign":
-            return {
-                "success": True,
-                "campaign_id": request_config['data']['campaign_id'],
-                "scheduled": True,
-                "send_time": request_config['data']['send_time'],
-                "recipients": len(request_config['data'].get('customer_ids', [])),
-                "message": "Campaign scheduled successfully"
-            }
-        
-        elif operation == "fetchPerformanceMetrics":
-            return {
-                "success": True,
-                "campaign_id": request_config['data']['campaign_id'],
-                "metrics": [],  # Calculated deterministically elsewhere
-                "message": "Metrics fetched"
-            }
-        
-        return {"success": False, "error": "Unknown operation"}
-    
-    def _get_mock_spec(self) -> Dict:
-        """
-        Mock OpenAPI spec for demo.
-        In production, this is fetched from real API.
-        """
+    def schedule_campaign(
+        self,
+        campaign_id: str,
+        customer_ids: List[str],
+        send_time: str
+    ) -> Dict:
+        """Alias for backward compatibility"""
+        # Note: Real API doesn't have separate schedule endpoint
+        # Use send_campaign instead
         return {
-            "openapi": "3.0.0",
-            "info": {"title": "Campaign API", "version": "1.0.0"},
-            "servers": [{"url": self.base_url}],
-            "paths": {
-                "/cohort/fetch": {
-                    "post": {
-                        "operationId": "fetchCustomerCohort",
-                        "summary": "Fetch fresh customer cohort",
-                        "requestBody": {
-                            "required": True,
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "segment_criteria": {"type": "string"},
-                                            "limit": {"type": "integer"}
-                                        },
-                                        "required": ["segment_criteria"]
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                "/campaign/schedule": {
-                    "post": {
-                        "operationId": "scheduleCampaign",
-                        "summary": "Schedule campaign delivery",
-                        "requestBody": {
-                            "required": True,
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "campaign_id": {"type": "string"},
-                                            "segment_id": {"type": "integer"},
-                                            "subject": {"type": "string"},
-                                            "body": {"type": "string"},
-                                            "send_time": {"type": "string"},
-                                            "customer_ids": {"type": "array"}
-                                        },
-                                        "required": ["campaign_id", "subject", "body", "send_time"]
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                "/metrics/fetch": {
-                    "post": {
-                        "operationId": "fetchPerformanceMetrics",
-                        "summary": "Fetch campaign performance metrics",
-                        "requestBody": {
-                            "required": True,
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "campaign_id": {"type": "string"},
-                                            "variant_ids": {"type": "array"}
-                                        },
-                                        "required": ["campaign_id"]
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            "status": "use_send_campaign_instead",
+            "message": "Call send_campaign() with subject, body, customer_ids, send_time"
         }
+    
+    # ============================================
+    # REPORTS
+    # ============================================
+    
+    def get_report(self, campaign_id: str) -> Dict:
+        """
+        Retrieve campaign performance report
+        
+        Args:
+            campaign_id: Campaign ID from send_campaign response
+        
+        Rate limit: 100 calls/day
+        Requires: Valid API key
+        
+        Returns:
+            GetReportResponse with data array including EO/EC flags
+        """
+        url = f"{self.base_url}/api/v1/get_report"
+        headers = {
+            "x-api-key": self.api_key
+        }
+        params = {
+            "campaign_id": campaign_id
+        }
+        
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {
+                "error": str(e),
+                "message": "Failed to fetch report",
+                "data": [],
+                "total_rows": 0
+            }
+    
+    def fetch_metrics(self, campaign_id: str) -> Dict:
+        """
+        Fetch campaign metrics from report data
+        
+        Args:
+            campaign_id: Campaign identifier
+            
+        Returns:
+            Computed metrics (open_rate, click_rate) from real data
+        """
+        report = self.get_report(campaign_id)
+        
+        if "error" in report or not report.get("data"):
+            return {
+                "campaign_id": campaign_id,
+                "error": report.get("error", "No data available"),
+                "open_rate": 0.0,
+                "click_rate": 0.0,
+                "total_sent": 0
+            }
+        
+        return self.compute_metrics(report)
+    
+    # ============================================
+    # METRICS COMPUTATION (REAL DATA)
+    # ============================================
+    
+    def compute_metrics(self, report_data: Dict) -> Dict:
+        """
+        Compute real performance metrics from report data
+        
+        Args:
+            report_data: GetReportResponse from get_report()
+        
+        Returns:
+            Computed metrics with open_rate and click_rate
+        """
+        rows = report_data.get("data", [])
+        total = len(rows)
+        
+        if total == 0:
+            return {
+                "open_rate": 0.0,
+                "click_rate": 0.0,
+                "total_sent": 0,
+                "opens": 0,
+                "clicks": 0
+            }
+        
+        opens = sum(1 for r in rows if r.get("EO") == "Y")
+        clicks = sum(1 for r in rows if r.get("EC") == "Y")
+        
+        open_rate = opens / total
+        click_rate = clicks / total
+        
+        return {
+            "campaign_id": report_data.get("campaign_id"),
+            "total_sent": total,
+            "opens": opens,
+            "clicks": clicks,
+            "open_rate": open_rate,
+            "click_rate": click_rate,
+            "ctr": click_rate  # Click-through rate
+        }
+    
+    # ============================================
+    # UTILITIES
+    # ============================================
+    
+    @staticmethod
+    def generate_future_send_time(minutes: int = 5) -> str:
+        """
+        Generate future send time in required format
+        
+        Args:
+            minutes: Minutes from now (default 5)
+        
+        Returns:
+            Formatted time string "DD:MM:YY HH:MM:SS" (IST)
+        """
+        future = datetime.now() + timedelta(minutes=minutes)
+        return future.strftime("%d:%m:%y %H:%M:%S")
 
 
 # Global API agent instance
@@ -350,5 +312,4 @@ def get_api_agent() -> APIAgent:
     global _api_agent
     if _api_agent is None:
         _api_agent = APIAgent()
-        _api_agent.discover_endpoints()
     return _api_agent

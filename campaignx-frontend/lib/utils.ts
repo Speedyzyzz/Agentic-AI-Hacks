@@ -41,21 +41,20 @@ export function formatDate(dateString: string): string {
  * Get status badge color
  */
 export function getStatusColor(status: string): string {
-  const statusMap: Record<string, 'default' | 'success' | 'warning' | 'danger'> = {
-    draft: 'default',
-    pending_approval: 'warning',
-    approved: 'success',
-    launched: 'success',
-    optimized: 'success',
-    rejected: 'danger',
+  const colors: Record<string, string> = {
+    draft: 'bg-gray-100 text-gray-800',
+    pending_approval: 'bg-yellow-100 text-yellow-800',
+    approved: 'bg-green-100 text-green-800',
+    launched: 'bg-blue-100 text-blue-800',
+    rejected: 'bg-red-100 text-red-800',
   };
-  return statusMap[status] || 'default';
+  return colors[status] || colors.draft;
 }
 
 /**
- * Truncate string to max length
+ * Truncate text with ellipsis
  */
-export function truncate(str: string, maxLength: number): string {
-  if (str.length <= maxLength) return str;
-  return str.substring(0, maxLength) + '...';
+export function truncate(text: string, length: number): string {
+  if (text.length <= length) return text;
+  return text.substring(0, length) + '...';
 }
